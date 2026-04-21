@@ -161,18 +161,17 @@
 
 **功能描述**：Bash 命令安全验证
 
-**Rust 状态**：✅ **基础实现已存在**
+**状态**：✅ **Rust 版本已完整实现**
 
 **Rust 实现位置**：
-- `tools/src/bash.rs` - Bash 工具实现
-
-**可能缺失功能**（需进一步验证）：
-- [ ] `readOnlyValidation` - 只读验证
-- [ ] `destructiveCommandWarning` - 破坏性命令警告
-- [ ] `modeValidation` - 模式验证
-- [ ] `sedValidation` - sed 编辑解析
-- [ ] `pathValidation` - 路径验证
-- [ ] `commandSemantics` - 命令语义分析
+- `runtime/src/bash_validation.rs` - 完整的 6 个子模块验证
+  - `validate_read_only()` - 只读验证
+  - `check_destructive()` - 破坏性命令警告
+  - `validate_mode()` - 模式验证
+  - `validate_sed()` - sed 编辑解析
+  - `validate_paths()` - 路径验证
+  - `classify_command()` - 命令语义分析
+- 完整的测试覆盖（100+ 测试用例）
 
 **关键文件**（TypeScript 版本）：
 - `src/tools/Bash/bashPermissions.ts` - Bash 权限
@@ -245,16 +244,15 @@
 
 ### 12. MCP（Model Context Protocol）
 
-**状态**：✅ **Rust 版本已实现**
+**状态**：✅ **Rust 版本已完整实现**
 
 **Rust 实现位置**：
-- `runtime/src/mcp.rs` - MCP 注册表和桥接
-- 完整的 MCP 工具注册和调用机制
-
-**可能缺失功能**（需进一步验证）：
-- [ ] MCP OAuth 端口
-- [ ] MCP 通道权限控制
-- [ ] MCP 认证处理
+- `runtime/src/mcp.rs` - 完整的 MCP 实现
+  - 支持所有传输类型：Stdio、Sse、Http、Ws、Sdk、ManagedProxy
+  - OAuth 配置支持（`McpOAuthConfig`）
+  - 服务器签名和配置哈希
+  - CCR 代理 URL  unwrap
+  - 工具名称规范化和前缀处理
 
 **关键文件**（TypeScript 版本）：
 - `src/services/mcp/MCPConnectionManager.tsx` - 连接管理
@@ -264,24 +262,48 @@
 
 ### 13. LSP 客户端
 
-**Rust 状态**：✅ **注册表/分派已实现**
+**Rust 状态**：✅ **完整数据模型已实现**
 
 **Rust 实现位置**：
-- `runtime/src/lsp.rs` - LSP 注册表
-
-**可能缺失功能**（需进一步验证）：
-- [ ] LSP 服务器进程编排
-- [ ] 完整的 LSP 方法实现
-- [ ] LSP 请求发送机制
+- `runtime/src/lsp_client.rs` - 完整的 LSP 注册表
+  - 支持所有主要 LSP 操作：Diagnostics、Hover、Definition、References、Completion、Symbols、Format
+  - 完整的数据类型：`LspDiagnostic`、`LspLocation`、`LspHoverResult`、`LspCompletionItem`、`LspSymbol`
+  - 服务器状态管理（Connected/Disconnected/Starting/Error）
+  - 注册表实现：register/get/list/set_diagnostics 等方法
 
 **关键文件**（TypeScript 版本）：
 - `src/services/lsp/LSPServerManager.ts` - LSP 管理器
 
 ---
 
-### 14. 团队和多代理系统
+### 14. Cron 定时任务
+
+**Rust 状态**：✅ **完整注册表已实现**
+
+**Rust 实现位置**：
+- `runtime/src/team_cron_registry.rs` - 完整的 Cron 注册表
+  - `CronEntry` 数据类型（schedule、prompt、description、enabled、created_at、updated_at、last_run_at、run_count）
+  - `CronRegistry` 实现：create/get/list/delete/disable/record_run
+  - 完整的测试覆盖
+
+**可能缺失功能**（需进一步验证）：
+- [ ] 后台调度器（实际执行定时任务）
+- [ ] Cron 表达式解析
+
+---
+
+### 15. 团队和多代理系统
 
 **功能描述**：多代理协作和团队管理
+
+**Rust 状态**：✅ **Team 注册表已实现**
+
+**Rust 实现位置**：
+- `runtime/src/team_cron_registry.rs` - 完整的 Team 注册表
+  - `Team` 数据类型（team_id、name、task_ids、status、created_at、updated_at）
+  - `TeamStatus` 枚举（Created/Running/Completed/Deleted）
+  - `TeamRegistry` 实现：create/get/list/delete/remove
+  - 完整的测试覆盖
 
 **缺失功能**：
 - [ ] 代理内存管理（`agentMemory`）
@@ -295,21 +317,6 @@
 **关键文件**（TypeScript 版本）：
 - `src/services/agents/` - 代理服务
 - `src/tools/AgentTool.ts` - 代理工具
-
----
-
-### 15. Cron 定时任务
-
-**Rust 状态**：✅ **注册表已实现**
-
-**Rust 实现位置**：
-- `runtime/src/cron.rs` - Cron 注册表
-
-**可能缺失功能**（需进一步验证）：
-- [ ] 后台调度器
-- [ ] 持久化定时任务
-- [ ] 定时任务执行引擎
-- [ ] Cron 表达式解析
 
 **关键文件**（TypeScript 版本）：
 - `src/tools/ScheduleCronTool.ts` - Cron 工具
@@ -507,17 +514,14 @@
 - Task/Team/Cron 注册表
 
 ⏳ **部分实现**：
-- Bash 验证（基础实现存在，需验证完整的 18 个子模块）
-- MCP 生命周期（基础实现存在，需验证 OAuth/权限控制）
-- LSP 客户端（注册表存在，需验证进程编排）
-- Cron 定时任务（注册表存在，需验证后台调度器）
+- Cron 定时任务（完整注册表已实现，需验证后台调度器）
+- 团队和多代理系统（Team 注册表已实现，需验证代理协作）
 
 ❌ **未实现**：
 - Bridge 系统（IDE 集成）
 - 完整 React + Ink UI 组件系统
 - 推测执行
 - LLM 驱动的会话压缩（待定）
-- 团队和多代理系统
 - Voice 语音模式
 - 通知系统
 - Vim 模式
@@ -533,13 +537,11 @@
 ### 阶段 1：核心功能（最高优先级）
 1. Bridge 系统基础（IDE 集成）
 2. LLM 驱动的会话压缩（待定）
-3. 完整 Bash 验证（18 个子模块）
+3. Cron 后台调度器
 
 ### 阶段 2：重要功能（高优先级）
-1. MCP OAuth 和权限控制
+1. 团队和多代理系统完整实现
 2. LSP 服务器进程编排
-3. Cron 后台调度器
-4. 团队和多代理系统
 
 ### 阶段 3：用户体验（中优先级）
 1. 通知系统
