@@ -278,17 +278,19 @@
 
 ### 14. Cron 定时任务
 
-**Rust 状态**：✅ **完整注册表已实现**
+**Rust 状态**：✅ **完整实现**
 
 **Rust 实现位置**：
 - `runtime/src/team_cron_registry.rs` - 完整的 Cron 注册表
   - `CronEntry` 数据类型（schedule、prompt、description、enabled、created_at、updated_at、last_run_at、run_count）
   - `CronRegistry` 实现：create/get/list/delete/disable/record_run
   - 完整的测试覆盖
-
-**可能缺失功能**（需进一步验证）：
-- [ ] 后台调度器（实际执行定时任务）
-- [ ] Cron 表达式解析
+- `runtime/src/cron_scheduler.rs` - Cron 后台调度器
+  - `CronScheduler` 结构体
+  - 事件系统（JobTriggered/Started/Stopped）
+  - `start()`/`stop()`/`is_running()` 方法
+  - 完整的测试覆盖
+- `tools/src/lib.rs` - Cron 工具（CronCreate/CronDelete/CronList）
 
 ---
 
@@ -512,9 +514,9 @@
 - 多供应商 API 支持（Anthropic、OpenAI、xAI、DashScope）
 - LSP 注册表
 - Task/Team/Cron 注册表
+- Cron 定时任务（完整实现，包括后台调度器）
 
 ⏳ **部分实现**：
-- Cron 定时任务（完整注册表已实现，需验证后台调度器）
 - 团队和多代理系统（Team 注册表已实现，需验证代理协作）
 
 ❌ **未实现**：
@@ -537,7 +539,7 @@
 ### 阶段 1：核心功能（最高优先级）
 1. Bridge 系统基础（IDE 集成）
 2. LLM 驱动的会话压缩（待定）
-3. Cron 后台调度器
+3. ✅ Cron 后台调度器（已完成）
 
 ### 阶段 2：重要功能（高优先级）
 1. 团队和多代理系统完整实现
