@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use uuid::Uuid;
+
 use crate::bridge::types::{SpawnMode, WorkSecret, GitInfo, SourceConfig, AuthConfig};
 use crate::session::Session;
 
@@ -137,7 +139,7 @@ impl SessionSpawner {
         // Check if we have git info
         let git_info = work_secret.sources.iter().find_map(|s| s.git_info.as_ref());
 
-        let worktree_name = format!("remote-session-{}", generate_uuid());
+        let worktree_name = format!("remote-session-{}", Uuid::new_v4());
         let worktree_path = std::env::temp_dir().join(&worktree_name);
 
         // Create the directory
@@ -350,26 +352,6 @@ impl SessionCleanup {
     }
 }
 
-/// Generate a UUID v4
-fn generate_uuid() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let mut bytes = [0u8; 16];
-    rng.fill_bytes(&mut bytes);
-    bytes[6] = (bytes[6] & 0x0F) | 0x40;
-    bytes[8] = (bytes[8] & 0x3F) | 0x80;
-
-    let mut uuid = String::with_capacity(36);
-    for (i, &b) in bytes.iter().enumerate() {
-        if i == 4 || i == 6 || i == 8 || i == 10 {
-            uuid.push('-');
-        }
-        use std::fmt::Write;
-        write!(&mut uuid, "{:02x}", b).unwrap();
-    }
-    uuid
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,13 +361,5 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let spawner = SessionSpawner::new(temp_dir, SpawnMode::SameDir);
         assert_eq!(spawner.spawn_mode, SpawnMode::SameDir);
-    }
-
-    #[test]
-    fn test_generate_uuid() {
-        let uuid1 = generate_uuid();
-        let uuid2 = generate_uuid();
-        assert_ne!(uuid1, uuid2);
-        assert_eq!(uuid1.len(), 36);
     }
 }

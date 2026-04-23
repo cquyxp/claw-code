@@ -59,6 +59,7 @@ use runtime::bridge::{
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use uuid::Uuid;
 use tools::{
     execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
 };
@@ -4181,9 +4182,7 @@ impl LiveCli {
     ) -> Result<BridgeConfig, Box<dyn std::error::Error>> {
         let cwd = env::current_dir()?;
         let cwd_str = cwd.to_string_lossy().to_string();
-        let hostname = std::env::var("HOSTNAME")
-            .or_else(|_| std::env::var("COMPUTERNAME"))
-            .unwrap_or_else(|_| "localhost".to_string());
+        let hostname = runtime::bridge::get_hostname();
 
         // Get git info
         let (git_branch, git_repo_url) = self.get_git_info()?;
@@ -4221,12 +4220,7 @@ impl LiveCli {
     }
 
     fn generate_simple_id(&self) -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        format!("{:x}", timestamp)
+        Uuid::new_v4().to_string()
     }
 
     fn get_git_info(&self) -> Result<(String, Option<String>), Box<dyn std::error::Error>> {

@@ -10,6 +10,21 @@ pub use api::{BridgeApiClient, BridgeFatalError, BridgeHttpClient, validate_brid
 pub use manager::BridgeManager;
 pub use types::*;
 
+/// Get the hostname using the best available method
+pub fn get_hostname() -> String {
+    // Try sys-info crate first
+    if let Ok(hostname) = sys_info::hostname() {
+        if !hostname.is_empty() {
+            return hostname;
+        }
+    }
+
+    // Fall back to environment variables
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "localhost".to_string())
+}
+
 use std::sync::Arc;
 use std::time::Duration;
 
