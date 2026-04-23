@@ -1,107 +1,169 @@
 # Claw Code
 
-<p align="center">
-  <a href="https://github.com/cquyxp/claw-code">cquyxp/claw-code</a>
-  ·
-  <a href="./USAGE.md">Usage</a>
-  ·
-  <a href="./rust/README.md">Rust workspace</a>
-  ·
-  <a href="./PARITY.md">Parity</a>
-  ·
-  <a href="./ROADMAP.md">Roadmap</a>
-</p>
-
-<p align="center">
+<div align="center">
   <img src="assets/claw-hero.jpeg" alt="Claw Code" width="300" />
-</p>
+  <p></p>
+  
+  <p>
+    <strong>高性能Rust实现的AI Agent命令行工具</strong>
+  </p>
+  
+  <p>
+    <a href="https://github.com/cquyxp/claw-code">
+      <img src="https://img.shields.io/badge/github-cquyxp%2Fclaw--code-blue?style=flat-square&logo=github" alt="GitHub" />
+    </a>
+    <a href="./rust">
+      <img src="https://img.shields.io/badge/rust-workspace-orange?style=flat-square&logo=rust" alt="Rust" />
+    </a>
+    <a href="./USAGE.md">
+      <img src="https://img.shields.io/badge/docs-usage-green?style=flat-square" alt="Docs" />
+    </a>
+  </p>
+</div>
 
-Claw Code is the public Rust implementation of the `claw` CLI agent harness.
-The canonical implementation lives in [`rust/`](./rust).
+---
 
-> [!IMPORTANT]
-> Start with [`USAGE.md`](./USAGE.md) for build, auth, CLI, session, and parity-harness workflows. Make `claw doctor` your first health check after building, use [`rust/README.md`](./rust/README.md) for crate-level details, read [`PARITY.md`](./PARITY.md) for the current Rust-port checkpoint, and see [`docs/container.md`](./docs/container.md) for the container-first workflow.
->
-> **ACP / Zed status:** `claw-code` does not ship an ACP/Zed daemon entrypoint yet. Run `claw acp` (or `claw --acp`) for the current status instead of guessing from source layout; `claw acp serve` is currently a discoverability alias only, and real ACP support remains tracked separately in `ROADMAP.md`.
+## 简介
 
-## Current repository shape
+Claw Code是一个用Rust重写的高性能AI Agent命令行工具。它提供了完整的会话管理、工具执行、权限控制等功能，让你可以在终端中与AI高效协作。
 
-- **`rust/`** — canonical Rust workspace and the `claw` CLI binary
-- **`USAGE.md`** — task-oriented usage guide for the current product surface
-- **`PARITY.md`** — Rust-port parity status and migration notes
-- **`ROADMAP.md`** — active roadmap and cleanup backlog
-- **`PHILOSOPHY.md`** — project intent and system-design framing
-- **`src/` + `tests/`** — companion Python/reference workspace and audit helpers; not the primary runtime surface
+## 功能特性
 
-## Quick start
+### 核心功能
+- 🚀 **高性能Rust实现** - 快速启动，低内存占用
+- 💬 **交互式REPL** - 流畅的对话体验
+- 🛠️ **丰富的内置工具** - 文件操作、命令执行、Web搜索等
+- 📦 **MCP服务器支持** - 扩展更多工具能力
+- 💾 **会话持久化** - 随时恢复之前的工作
+- 🔐 **权限系统** - 安全控制工具执行
 
-> [!NOTE]
-> [!WARNING]
-> **`cargo install claw-code` installs the wrong thing.** The `claw-code` crate on crates.io is a deprecated stub that places `claw-code-deprecated.exe` — not `claw`. Running it only prints `"claw-code has been renamed to agent-code"`. **Do not use `cargo install claw-code`.** Build from source (this repo):
+### 支持的提供商
+- Anthropic Claude
+- OpenAI / OpenRouter
+- xAI Grok
+- DashScope (Qwen, Kimi)
+- 更多兼容OpenAI的API
+
+### 内置工具
+| 类别 | 工具 |
+|------|------|
+| 文件操作 | ReadFile, WriteFile, EditFile, GlobSearch, GrepSearch |
+| 执行 | Bash |
+| Web | WebSearch, WebFetch |
+| Agent | Agent, TodoWrite, NotebookEdit, Skill |
+| 其他 | LaneCompletion, PdfExtract |
+
+## 快速开始
+
+### 1. 克隆并构建
 
 ```bash
-# 1. Clone and build
 git clone https://github.com/cquyxp/claw-code
 cd claw-code/rust
 cargo build --workspace
-
-# 2. Set your API key (Anthropic API key — not a Claude subscription)
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# 3. Verify everything is wired correctly
-./target/debug/claw doctor
-
-# 4. Run a prompt
-./target/debug/claw prompt "say hello"
 ```
 
-> [!NOTE]
-> **Windows (PowerShell):** the binary is `claw.exe`, not `claw`. Use `.\target\debug\claw.exe` or run `cargo run -- prompt "say hello"` to skip the path lookup.
-
-### Windows setup
-
-**PowerShell is a supported Windows path.** Use whichever shell works for you. The common onboarding issues on Windows are:
-
-1. **Install Rust first** — download from <https://rustup.rs/> and run the installer. Close and reopen your terminal when it finishes.
-2. **Verify Rust is on PATH:**
-   ```powershell
-   cargo --version
-   ```
-   If this fails, reopen your terminal or run the PATH setup from the Rust installer output, then retry.
-3. **Clone and build** (works in PowerShell, Git Bash, or WSL):
-   ```powershell
-   git clone https://github.com/cquyxp/claw-code
-   cd claw-code/rust
-   cargo build --workspace
-   ```
-4. **Run** (PowerShell — note `.exe` and backslash):
-   ```powershell
-   $env:ANTHROPIC_API_KEY = "sk-ant-..."
-   .\target\debug\claw.exe prompt "say hello"
-   ```
-
-**Git Bash / WSL** are optional alternatives, not requirements. If you prefer bash-style paths (`/c/Users/you/...` instead of `C:\Users\you\...`), Git Bash (ships with Git for Windows) works well. In Git Bash, the `MINGW64` prompt is expected and normal — not a broken install.
-
-> [!NOTE]
-> **Auth:** claw requires an **API key** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) — Claude subscription login is not a supported auth path.
-
-Run the workspace test suite:
+### 2. 配置API密钥
 
 ```bash
-cd rust
-cargo test --workspace
+# 使用Anthropic API
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# 或使用OpenAI兼容API
+export OPENAI_API_KEY="sk-..."
+export OPENAI_BASE_URL="https://your-proxy.com"
 ```
 
-## Documentation map
+### 3. 运行
 
-- [`USAGE.md`](./USAGE.md) — quick commands, auth, sessions, config, parity harness
-- [`rust/README.md`](./rust/README.md) — crate map, CLI surface, features, workspace layout
-- [`PARITY.md`](./PARITY.md) — parity status for the Rust port
-- [`rust/MOCK_PARITY_HARNESS.md`](./rust/MOCK_PARITY_HARNESS.md) — deterministic mock-service harness details
-- [`ROADMAP.md`](./ROADMAP.md) — active roadmap and open cleanup work
-- [`PHILOSOPHY.md`](./PHILOSOPHY.md) — why the project exists and how it is operated
+```bash
+# 进入交互模式
+./target/debug/claw
 
-## Ownership / affiliation disclaimer
+# 一次性提示
+./target/debug/claw prompt "你好，请介绍一下自己"
 
-- This repository does **not** claim ownership of the original Claude Code source material.
-- This repository is **not affiliated with, endorsed by, or maintained by Anthropic**.
+# 检查健康状态
+./target/debug/claw doctor
+```
+
+### Windows用户
+
+```powershell
+# PowerShell中运行
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+.\target\debug\claw.exe
+```
+
+## 文档
+
+- 📖 [使用指南](./USAGE.md) - 详细的使用说明和示例
+- 🦀 [Rust Workspace](./rust/README.md) - 项目结构和开发指南
+- ✅ [功能对比](./PARITY.md) - 与原版的功能对比
+- 🗺️ [路线图](./ROADMAP.md) - 未来计划
+
+## 项目结构
+
+```text
+claw-code/
+├── rust/
+│   ├── Cargo.toml              # Workspace配置
+│   └── crates/
+│       ├── api/                # API客户端和提供商
+│       ├── commands/           # 斜杠命令定义
+│       ├── plugins/            # 插件管理
+│       ├── runtime/            # 核心运行时
+│       ├── rusty-claude-cli/   # 主CLI程序
+│       ├── telemetry/          # 遥测数据
+│       └── tools/              # 内置工具实现
+├── docs/                       # 额外文档
+└── assets/                     # 图片资源
+```
+
+## 模型别名
+
+| 别名 | 完整模型名 |
+|------|-----------|
+| `opus` | `claude-opus-4-6` |
+| `sonnet` | `claude-sonnet-4-6` |
+| `haiku` | `claude-haiku-4-5-20251213` |
+| `grok` | `grok-3` |
+| `kimi` | `kimi-k2.5` |
+
+## 开发
+
+```bash
+# 运行测试
+cd rust
+cargo test --workspace
+
+# 代码格式化
+cargo fmt
+
+# Lint检查
+cargo clippy --workspace --all-targets -- -D warnings
+
+# 运行Mock Parity测试
+./scripts/run_mock_parity_harness.sh
+```
+
+## 注意事项
+
+> ⚠️ **不要使用 `cargo install claw-code`** - crates.io上的是过时的旧版本，请直接从源码构建。
+
+## 免责声明
+
+- 本项目不声称拥有原始Claude Code源代码的所有权
+- 本项目与Anthropic无关，未经其认可或维护
+
+## 许可证
+
+详见项目根目录的许可证文件。
+
+---
+
+<div align="center">
+  <p>
+    用 ❤️ 和 🦀 构建
+  </p>
+</div>
