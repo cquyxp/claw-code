@@ -1,9 +1,10 @@
 //! Session creation and management for different spawn modes
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::bridge::types::{SpawnMode, WorkSecret};
+use crate::bridge::types::{SpawnMode, WorkSecret, GitInfo, SourceConfig, AuthConfig};
 use crate::session::Session;
 
 /// Session creation error
@@ -20,6 +21,9 @@ pub enum SessionCreateError {
 
     #[error("Session error: {0}")]
     Session(String),
+
+    #[error("Command execution error: {0}")]
+    Command(String),
 }
 
 /// Session spawner
@@ -60,12 +64,21 @@ impl SessionSpawner {
         &self,
         work_secret: &WorkSecret,
     ) -> Result<SpawnedSession, SessionCreateError> {
+        let work_dir = self.base_dir.clone();
+
+        // Setup environment variables
+        Self::setup_environment(work_secret)?;
+
+        // Setup git config
+        Self::setup_git_config(&work_dir, work_secret).await?;
+
         let session = Self::create_session()?;
         Ok(SpawnedSession {
             session,
-            work_dir: self.base_dir.clone(),
+            work_dir,
             mode: SpawnMode::SingleSession,
             cleanup: None,
+            env_vars: work_secret.environment_variables.clone().unwrap_or_default(),
         })
     }
 
@@ -75,6 +88,13 @@ impl SessionSpawner {
         work_secret: &WorkSecret,
     ) -> Result<SpawnedSession, SessionCreateError> {
         let work_dir = self.create_worktree(work_secret).await?;
+
+        // Setup environment variables
+        Self::setup_environment(work_secret)?;
+
+        // Setup git config in the worktree
+        Self::setup_git_config(&work_dir, work_secret).await?;
+
         let session = Self::create_session()?;
 
         Ok(SpawnedSession {
@@ -82,6 +102,7 @@ impl SessionSpawner {
             work_dir,
             mode: SpawnMode::Worktree,
             cleanup: Some(SessionCleanup::Worktree),
+            env_vars: work_secret.environment_variables.clone().unwrap_or_default(),
         })
     }
 
@@ -90,12 +111,21 @@ impl SessionSpawner {
         &self,
         work_secret: &WorkSecret,
     ) -> Result<SpawnedSession, SessionCreateError> {
+        let work_dir = self.base_dir.clone();
+
+        // Setup environment variables
+        Self::setup_environment(work_secret)?;
+
+        // Setup git config
+        Self::setup_git_config(&work_dir, work_secret).await?;
+
         let session = Self::create_session()?;
         Ok(SpawnedSession {
             session,
-            work_dir: self.base_dir.clone(),
+            work_dir,
             mode: SpawnMode::SameDir,
             cleanup: None,
+            env_vars: work_secret.environment_variables.clone().unwrap_or_default(),
         })
     }
 
@@ -104,10 +134,130 @@ impl SessionSpawner {
         &self,
         work_secret: &WorkSecret,
     ) -> Result<PathBuf, SessionCreateError> {
-        let worktree_name = format!("remote-session-{}", uuid::Uuid::new_v4());
-        let worktree_path = self.base_dir.join(&worktree_name);
+        // Check if we have git info
+        let git_info = work_secret.sources.iter().find_map(|s| s.git_info.as_ref());
+
+        let worktree_name = format!("remote-session-{}", generate_uuid());
+        let worktree_path = std::env::temp_dir().join(&worktree_name);
+
+        // Create the directory
+        tokio::fs::create_dir_all(&worktree_path).await?;
+
+        // If we have git info, clone/checkout the repo
+        if let Some(git) = git_info {
+            Self::setup_git_repository(&worktree_path, git).await?;
+        }
 
         Ok(worktree_path)
+    }
+
+    /// Setup a git repository
+    async fn setup_git_repository(
+        path: &Path,
+        git_info: &GitInfo,
+    ) -> Result<(), SessionCreateError> {
+        // Clone the repo if we have a URL
+        if !git_info.repo.is_empty() {
+            let status = tokio::process::Command::new("git")
+                .arg("clone")
+                .arg(&git_info.repo)
+                .arg(".")
+                .current_dir(path)
+                .output()
+                .await
+                .map_err(|e| SessionCreateError::Git(format!("Clone failed: {}", e)))?;
+
+            if !status.status.success() {
+                let error = String::from_utf8_lossy(&status.stderr);
+                return Err(SessionCreateError::Git(format!("Clone failed: {}", error)));
+            }
+
+            // Checkout the specified ref if provided
+            if let Some(r#ref) = &git_info.r#ref {
+                let status = tokio::process::Command::new("git")
+                    .arg("checkout")
+                    .arg(r#ref)
+                    .current_dir(path)
+                    .output()
+                    .await
+                    .map_err(|e| SessionCreateError::Git(format!("Checkout failed: {}", e)))?;
+
+                if !status.status.success() {
+                    let error = String::from_utf8_lossy(&status.stderr);
+                    return Err(SessionCreateError::Git(format!("Checkout failed: {}", error)));
+                }
+            }
+        } else {
+            // Initialize a new repo
+            let status = tokio::process::Command::new("git")
+                .arg("init")
+                .current_dir(path)
+                .output()
+                .await
+                .map_err(|e| SessionCreateError::Git(format!("Init failed: {}", e)))?;
+
+            if !status.status.success() {
+                let error = String::from_utf8_lossy(&status.stderr);
+                return Err(SessionCreateError::Git(format!("Init failed: {}", error)));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Setup git config
+    async fn setup_git_config(
+        path: &Path,
+        work_secret: &WorkSecret,
+    ) -> Result<(), SessionCreateError> {
+        // Find git info with token
+        let git_token = work_secret.sources.iter()
+            .find_map(|s| s.git_info.as_ref().and_then(|g| g.token.as_ref()));
+
+        if let Some(token) = git_token {
+            // Configure credential helper
+            let credential_helper = format!(
+                "!f() {{ echo 'username=token'; echo 'password={}'; }}; f",
+                token
+            );
+
+            let status = tokio::process::Command::new("git")
+                .arg("config")
+                .arg("credential.helper")
+                .arg(&credential_helper)
+                .current_dir(path)
+                .output()
+                .await;
+
+            // Ignore errors for git config - it's optional
+            let _ = status;
+        }
+
+        Ok(())
+    }
+
+    /// Setup environment variables from work secret
+    fn setup_environment(work_secret: &WorkSecret) -> Result<(), SessionCreateError> {
+        if let Some(env_vars) = &work_secret.environment_variables {
+            for (key, value) in env_vars {
+                std::env::set_var(key, value);
+            }
+        }
+
+        // Setup auth tokens
+        for auth in &work_secret.auth {
+            match auth.r#type.as_str() {
+                "anthropic" => {
+                    std::env::set_var("ANTHROPIC_API_KEY", &auth.token);
+                }
+                "openai" => {
+                    std::env::set_var("OPENAI_API_KEY", &auth.token);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 
     /// Create a new session
@@ -122,6 +272,7 @@ pub struct SpawnedSession {
     pub work_dir: PathBuf,
     pub mode: SpawnMode,
     cleanup: Option<SessionCleanup>,
+    env_vars: HashMap<String, String>,
 }
 
 impl SpawnedSession {
@@ -138,6 +289,11 @@ impl SpawnedSession {
     /// Get the work directory
     pub fn work_dir(&self) -> &Path {
         &self.work_dir
+    }
+
+    /// Get the environment variables
+    pub fn env_vars(&self) -> &HashMap<String, String> {
+        &self.env_vars
     }
 
     /// Clean up the session
@@ -174,27 +330,62 @@ impl SessionCleanup {
 
     /// Clean up a git worktree
     async fn cleanup_worktree(path: &Path) -> Result<(), SessionCreateError> {
+        // Try to remove the git worktree if it's a git repo
+        let git_dir = path.join(".git");
+        if git_dir.exists() {
+            // Try git worktree remove first
+            let _ = tokio::process::Command::new("git")
+                .arg("worktree")
+                .arg("remove")
+                .arg("--force")
+                .arg(path)
+                .output()
+                .await;
+        }
+
+        // Always try to remove the directory
+        tokio::fs::remove_dir_all(path).await?;
+
         Ok(())
     }
 }
 
-/// UUID generation (placeholder until we add a proper dependency)
-mod uuid {
-    /// Generate a simple random UUID
-    pub fn new_v4() -> String {
-        use std::fmt::Write;
-        let mut rng = rand::thread_rng();
-        let mut bytes = [0u8; 16];
-        rng.fill_bytes(&mut bytes);
-        bytes[6] = (bytes[6] & 0x0F) | 0x40;
-        bytes[8] = (bytes[8] & 0x3F) | 0x80;
-        let mut uuid = String::with_capacity(36);
-        for (i, &b) in bytes.iter().enumerate() {
-            if i == 4 || i == 6 || i == 8 || i == 10 {
-                uuid.push('-');
-            }
-            write!(&mut uuid, "{:02x}", b).unwrap();
+/// Generate a UUID v4
+fn generate_uuid() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut bytes = [0u8; 16];
+    rng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+
+    let mut uuid = String::with_capacity(36);
+    for (i, &b) in bytes.iter().enumerate() {
+        if i == 4 || i == 6 || i == 8 || i == 10 {
+            uuid.push('-');
         }
-        uuid
+        use std::fmt::Write;
+        write!(&mut uuid, "{:02x}", b).unwrap();
+    }
+    uuid
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_spawner_new() {
+        let temp_dir = std::env::temp_dir();
+        let spawner = SessionSpawner::new(temp_dir, SpawnMode::SameDir);
+        assert_eq!(spawner.spawn_mode, SpawnMode::SameDir);
+    }
+
+    #[test]
+    fn test_generate_uuid() {
+        let uuid1 = generate_uuid();
+        let uuid2 = generate_uuid();
+        assert_ne!(uuid1, uuid2);
+        assert_eq!(uuid1.len(), 36);
     }
 }

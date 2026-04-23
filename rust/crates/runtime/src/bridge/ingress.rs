@@ -3,6 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
 use crate::bridge::api::BridgeFatalError;
 use crate::bridge::types::*;
 
@@ -23,6 +27,12 @@ pub enum IngressError {
 
     #[error("Connection closed")]
     ConnectionClosed,
+
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    #[error("Send error: {0}")]
+    Send(String),
 }
 
 /// Session ingress event
@@ -45,6 +55,9 @@ pub enum IngressEvent {
 
     /// Heartbeat ping
     Ping,
+
+    /// Raw message
+    Raw(serde_json::Value),
 }
 
 /// Control command from claude.ai
@@ -97,36 +110,195 @@ impl Default for IngressConfig {
     }
 }
 
+/// Incoming message from the ingress
+#[derive(Debug, Deserialize)]
+struct IncomingMessage {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub data: Option<serde_json::Value>,
+}
+
 /// Session ingress client
 pub struct SessionIngress {
     config: IngressConfig,
     is_connected: bool,
+    event_sender: Option<mpsc::Sender<IngressEvent>>,
+    event_receiver: Option<mpsc::Receiver<IngressEvent>>,
 }
 
 impl SessionIngress {
     /// Create a new session ingress
     pub fn new(config: IngressConfig) -> Self {
+        let (tx, rx) = mpsc::channel(100);
         Self {
             config,
             is_connected: false,
+            event_sender: Some(tx),
+            event_receiver: Some(rx),
         }
     }
 
     /// Connect to the ingress endpoint
     pub async fn connect(&mut self) -> Result<(), IngressError> {
+        let url = url::Url::parse(&self.config.ingress_url)
+            .map_err(|e| IngressError::WebSocket(format!("Invalid URL: {}", e)))?;
+
+        let mut request = http::Request::builder()
+            .uri(&self.config.ingress_url)
+            .header("Authorization", format!("Bearer {}", self.config.session_token))
+            .body(())
+            .map_err(|e| IngressError::WebSocket(format!("Request build error: {}", e)))?;
+
+        let (ws_stream, response) = connect_async(request)
+            .await
+            .map_err(|e| IngressError::WebSocket(format!("Connection error: {}", e)))?;
+
+        if response.status().as_u16() != 101 {
+            return Err(IngressError::WebSocket(format!(
+                "Unexpected status code: {}",
+                response.status()
+            )));
+        }
+
         self.is_connected = true;
+
+        if let Some(sender) = &self.event_sender {
+            sender.send(IngressEvent::Connected).await
+                .map_err(|e| IngressError::Send(e.to_string()))?;
+        }
+
+        let (write, read) = ws_stream.split();
+        let sender = self.event_sender.clone();
+
+        // Spawn read task
+        tokio::spawn(Self::read_loop(read, sender));
+
         Ok(())
+    }
+
+    /// Read loop for WebSocket messages
+    async fn read_loop(
+        mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
+        sender: Option<mpsc::Sender<IngressEvent>>,
+    ) {
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    if let Some(s) = &sender {
+                        let event = Self::parse_message(&text);
+                        let _ = s.send(event).await;
+                    }
+                }
+                Ok(Message::Binary(data)) => {
+                    if let Ok(text) = String::from_utf8(data) {
+                        if let Some(s) = &sender {
+                            let event = Self::parse_message(&text);
+                            let _ = s.send(event).await;
+                        }
+                    }
+                }
+                Ok(Message::Ping(_)) => {
+                    if let Some(s) = &sender {
+                        let _ = s.send(IngressEvent::Ping).await;
+                    }
+                }
+                Ok(Message::Close(_)) => {
+                    if let Some(s) = &sender {
+                        let _ = s.send(IngressEvent::Disconnected).await;
+                    }
+                    break;
+                }
+                Err(e) => {
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Parse an incoming message
+    fn parse_message(text: &str) -> IngressEvent {
+        match serde_json::from_str::<IncomingMessage>(text) {
+            Ok(msg) => {
+                match msg.msg_type.as_str() {
+                    "user_input" => {
+                        if let Some(data) = msg.data {
+                            if let Some(text) = data.as_str() {
+                                return IngressEvent::UserInput(text.to_string());
+                            } else if let Some(input) = data.get("text").and_then(|t| t.as_str()) {
+                                return IngressEvent::UserInput(input.to_string());
+                            }
+                        }
+                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                    }
+                    "control_command" => {
+                        if let Some(data) = msg.data {
+                            let cmd = Self::parse_control_command(&data);
+                            return IngressEvent::ControlCommand(cmd);
+                        }
+                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                    }
+                    "permission_request" => {
+                        if let Some(data) = msg.data {
+                            if let Ok(req) = serde_json::from_value::<PermissionRequest>(data) {
+                                return IngressEvent::PermissionRequest(req);
+                            }
+                        }
+                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                    }
+                    _ => {
+                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                    }
+                }
+            }
+            Err(_) => {
+                IngressEvent::UserInput(text.to_string())
+            }
+        }
+    }
+
+    /// Parse a control command
+    fn parse_control_command(data: &serde_json::Value) -> ControlCommand {
+        if let Some(cmd) = data.get("command").and_then(|c| c.as_str()) {
+            match cmd {
+                "stop" => ControlCommand::Stop,
+                "pause" => ControlCommand::Pause,
+                "resume" => ControlCommand::Resume,
+                "update_config" => {
+                    ControlCommand::UpdateConfig(data.get("config").cloned().unwrap_or_default())
+                }
+                _ => ControlCommand::Custom(cmd.to_string(), data.clone()),
+            }
+        } else {
+            ControlCommand::Custom("unknown".to_string(), data.clone())
+        }
     }
 
     /// Disconnect from the ingress endpoint
     pub async fn disconnect(&mut self) -> Result<(), IngressError> {
         self.is_connected = false;
+        if let Some(sender) = &self.event_sender {
+            let _ = sender.send(IngressEvent::Disconnected).await;
+        }
         Ok(())
     }
 
     /// Receive the next event from the ingress
     pub async fn next_event(&mut self) -> Result<IngressEvent, IngressError> {
-        Err(IngressError::ConnectionClosed)
+        if let Some(receiver) = &mut self.event_receiver {
+            receiver.recv().await.ok_or(IngressError::ConnectionClosed)
+        } else {
+            Err(IngressError::ConnectionClosed)
+        }
+    }
+
+    /// Try to receive an event without blocking
+    pub fn try_next_event(&mut self) -> Option<IngressEvent> {
+        if let Some(receiver) = &mut self.event_receiver {
+            receiver.try_recv().ok()
+        } else {
+            None
+        }
     }
 
     /// Check if connected
@@ -138,12 +310,18 @@ impl SessionIngress {
 /// Ingress message sender for sending events back to claude.ai
 pub struct IngressSender {
     session_token: String,
+    api_base_url: String,
+    client: reqwest::Client,
 }
 
 impl IngressSender {
     /// Create a new ingress sender
-    pub fn new(session_token: String) -> Self {
-        Self { session_token }
+    pub fn new(session_token: String, api_base_url: String) -> Self {
+        Self {
+            session_token,
+            api_base_url,
+            client: reqwest::Client::new(),
+        }
     }
 
     /// Send a permission response
@@ -151,6 +329,16 @@ impl IngressSender {
         &self,
         response: PermissionResponseEvent,
     ) -> Result<(), IngressError> {
+        let url = format!("{}/v1/sessions/events", self.api_base_url.trim_end_matches('/'));
+
+        self.client.post(&url)
+            .header("Authorization", format!("Bearer {}", self.session_token))
+            .header("Content-Type", "application/json")
+            .json(&response)
+            .send()
+            .await
+            .map_err(|e| IngressError::Http(format!("Send permission response error: {}", e)))?;
+
         Ok(())
     }
 
@@ -159,6 +347,82 @@ impl IngressSender {
         &self,
         activity: SessionActivity,
     ) -> Result<(), IngressError> {
+        let event = serde_json::json!({
+            "type": "session_activity",
+            "activity": {
+                "type": match activity.r#type {
+                    SessionActivityType::ToolStart => "tool_start",
+                    SessionActivityType::Text => "text",
+                    SessionActivityType::Result => "result",
+                    SessionActivityType::Error => "error",
+                },
+                "summary": activity.summary,
+                "timestamp": activity.timestamp,
+            }
+        });
+
+        let url = format!("{}/v1/sessions/events", self.api_base_url.trim_end_matches('/'));
+
+        self.client.post(&url)
+            .header("Authorization", format!("Bearer {}", self.session_token))
+            .header("Content-Type", "application/json")
+            .json(&event)
+            .send()
+            .await
+            .map_err(|e| IngressError::Http(format!("Send activity error: {}", e)))?;
+
         Ok(())
+    }
+
+    /// Send session done status
+    pub async fn send_session_done(
+        &self,
+        status: SessionDoneStatus,
+    ) -> Result<(), IngressError> {
+        let status_str = match status {
+            SessionDoneStatus::Completed => "completed",
+            SessionDoneStatus::Failed => "failed",
+            SessionDoneStatus::Interrupted => "interrupted",
+        };
+
+        let event = serde_json::json!({
+            "type": "session_done",
+            "status": status_str,
+        });
+
+        let url = format!("{}/v1/sessions/events", self.api_base_url.trim_end_matches('/'));
+
+        self.client.post(&url)
+            .header("Authorization", format!("Bearer {}", self.session_token))
+            .header("Content-Type", "application/json")
+            .json(&event)
+            .send()
+            .await
+            .map_err(|e| IngressError::Http(format!("Send session done error: {}", e)))?;
+
+        Ok(())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PermissionRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            request_id: String,
+            tool_name: String,
+            tool_input: serde_json::Value,
+            timeout_ms: Option<u64>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        Ok(PermissionRequest {
+            request_id: helper.request_id,
+            tool_name: helper.tool_name,
+            tool_input: helper.tool_input,
+            timeout_ms: helper.timeout_ms,
+        })
     }
 }

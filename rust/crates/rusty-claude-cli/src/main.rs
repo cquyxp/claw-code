@@ -50,6 +50,13 @@ use runtime::{
     ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, TokenUsage,
     ToolError, ToolExecutor, UsageTracker,
 };
+use runtime::bridge::{
+    BridgeConfig, BridgeManager, BridgeState as _, BridgeRuntime, BridgeWorkerType,
+    BridgeLoopOptions, BridgeLoopEvent, SpawnMode, WorkResponse, WorkSecret,
+    BridgeHttpClient, BridgeApiClient, validate_bridge_id,
+    SessionIngress, IngressConfig, IngressEvent, IngressSender,
+    SessionSpawner, SpawnedSession, SessionCreateError,
+};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tools::{
@@ -3161,6 +3168,16 @@ struct LiveCli {
     session: SessionHandle,
     prompt_history: Vec<PromptHistoryEntry>,
     bridge_state: Option<BridgeState>,
+    bridge_runtime: Option<Arc<Mutex<BridgeRuntime>>>,
+    tokio_runtime: tokio::runtime::Runtime,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BridgeState {
+    is_running: bool,
+    environment_id: Option<String>,
+    bridge_name: Option<String>,
+    target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3667,6 +3684,7 @@ impl LiveCli {
             permission_mode,
             None,
         )?;
+        let tokio_runtime = tokio::runtime::Runtime::new()?;
         let cli = Self {
             model,
             allowed_tools,
@@ -3676,6 +3694,8 @@ impl LiveCli {
             session,
             prompt_history: Vec::new(),
             bridge_state: None,
+            bridge_runtime: None,
+            tokio_runtime,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -4058,8 +4078,183 @@ impl LiveCli {
         name: Option<String>,
         session_id: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("{}", render_remote_control_status(&self.bridge_state, &name, &session_id));
+        // Check if we need to start or stop the bridge
+        let should_start = name.as_deref().map_or(false, |n| n != "stop");
+        let should_stop = name.as_deref() == Some("stop");
+
+        if should_stop {
+            return self.stop_remote_control();
+        }
+
+        // If bridge is already running, show status
+        if let Some(state) = &self.bridge_state {
+            if state.is_running {
+                println!("{}", render_remote_control_status(&self.bridge_state, &name, &session_id));
+                return Ok(());
+            }
+        }
+
+        // Start the bridge
+        self.start_remote_control(name, session_id)
+    }
+
+    fn start_remote_control(
+        &mut self,
+        name: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        println!("🔗 Starting Remote Control...");
+
+        // Load config
+        let cwd = env::current_dir()?;
+        let loader = ConfigLoader::default_for(&cwd);
+        let runtime_config = loader.load()?;
+
+        // Build bridge config
+        let bridge_config = self.build_bridge_config(name.clone(), session_id.clone())?;
+
+        // Create HTTP client
+        let api_client = Arc::new(BridgeHttpClient::new(
+            bridge_config.api_base_url.clone(),
+            env!("CARGO_PKG_VERSION").to_string(),
+            || std::env::var("ANTHROPIC_API_KEY").ok(),
+        )?);
+
+        // Create bridge runtime
+        let bridge_runtime = BridgeRuntime::new(bridge_config, api_client);
+
+        // Start the bridge
+        println!("  Connecting to claude.ai...");
+        self.tokio_runtime.block_on(bridge_runtime.start())?;
+
+        // Update state
+        self.bridge_state = Some(BridgeState {
+            is_running: true,
+            environment_id: bridge_runtime.environment_id(),
+            bridge_name: name,
+            target_session_id: session_id,
+        });
+
+        self.bridge_runtime = Some(Arc::new(Mutex::new(bridge_runtime)));
+
+        println!("✅ Remote Control connected!");
+        println!();
+        println!("{}", render_remote_control_status(&self.bridge_state, &None, &None));
+
         Ok(())
+    }
+
+    fn stop_remote_control(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(state) = &self.bridge_state {
+            if state.is_running {
+                println!("🛑 Stopping Remote Control...");
+
+                if let Some(bridge_runtime) = &self.bridge_runtime {
+                    let bridge = bridge_runtime.lock().unwrap();
+                    self.tokio_runtime.block_on(bridge.stop())?;
+                }
+
+                // Update state
+                let mut new_state = state.clone();
+                new_state.is_running = false;
+                new_state.environment_id = None;
+                self.bridge_state = Some(new_state);
+                self.bridge_runtime = None;
+
+                println!("✅ Remote Control stopped");
+                return Ok(());
+            }
+        }
+
+        println!("ℹ️ Remote Control is not running");
+        Ok(())
+    }
+
+    fn build_bridge_config(
+        &self,
+        name: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<BridgeConfig, Box<dyn std::error::Error>> {
+        let cwd = env::current_dir()?;
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let hostname = std::env::var("HOSTNAME")
+            .or_else(|_| std::env::var("COMPUTERNAME"))
+            .unwrap_or_else(|_| "localhost".to_string());
+
+        // Get git info
+        let (git_branch, git_repo_url) = self.get_git_info()?;
+
+        // Generate bridge IDs (simple random IDs without uuid crate)
+        let bridge_id = self.generate_simple_id();
+        let environment_id = self.generate_simple_id();
+
+        let api_base_url = std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+
+        let session_ingress_url = std::env::var("ANTHROPIC_INGRESS_URL")
+            .unwrap_or_else(|_| "wss://api.anthropic.com".to_string());
+
+        Ok(BridgeConfig {
+            dir: cwd_str,
+            machine_name: hostname,
+            branch: git_branch,
+            git_repo_url,
+            max_sessions: 5,
+            spawn_mode: SpawnMode::SameDir,
+            verbose: false,
+            sandbox: false,
+            bridge_id,
+            worker_type: "claude_code".to_string(),
+            environment_id,
+            reuse_environment_id: None,
+            api_base_url,
+            session_ingress_url,
+            debug_file: None,
+            session_timeout: Some(std::time::Duration::from_secs(86400)),
+        })
+    }
+
+    fn generate_simple_id(&self) -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{:x}", timestamp)
+    }
+
+    fn get_git_info(&self) -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
+        let cwd = env::current_dir()?;
+
+        // Get branch
+        let branch = std::process::Command::new("git")
+            .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&cwd)
+            .output()
+            .ok()
+            .and_then(|output| {
+                if output.status.success() {
+                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            });
+
+        // Get repo URL
+        let repo_url = std::process::Command::new("git")
+            .args(&["remote", "get-url", "origin"])
+            .current_dir(&cwd)
+            .output()
+            .ok()
+            .and_then(|output| {
+                if output.status.success() {
+                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            });
+
+        Ok((branch.unwrap_or_else(|| "HEAD".to_string()), repo_url))
     }
 
     fn persist_session(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -4897,34 +5092,39 @@ fn render_remote_control_status(
     session_id: &Option<String>,
 ) -> String {
     let mut lines = vec!["Remote Control (claude.ai integration)".to_string()];
+    lines.push(String::new());
 
     if let Some(state) = bridge_state {
         if state.is_running {
-            lines.push("  Status: Running".to_string());
+            lines.push("  Status: ✅ Running".to_string());
             if let Some(env_id) = &state.environment_id {
                 lines.push(format!("  Environment ID: {}", env_id));
             }
+            if let Some(bridge_name) = &state.bridge_name {
+                lines.push(format!("  Bridge name: {}", bridge_name));
+            }
+            if let Some(target_sid) = &state.target_session_id {
+                lines.push(format!("  Target session: {}", target_sid));
+            }
         } else {
-            lines.push("  Status: Not running".to_string());
+            lines.push("  Status: ⏹️ Not running".to_string());
         }
     } else {
-        lines.push("  Status: Not running".to_string());
+        lines.push("  Status: ⏹️ Not running".to_string());
     }
 
-    if let Some(n) = name {
-        lines.push(format!("  Bridge name: {}", n));
-    }
-
-    if let Some(sid) = session_id {
-        lines.push(format!("  Target session ID: {}", sid));
-    }
-
+    lines.push(String::new());
+    lines.push("Usage:".to_string());
+    lines.push("  /remote-control          - Start remote control and show status".to_string());
+    lines.push("  /remote-control start    - Start remote control".to_string());
+    lines.push("  /remote-control stop     - Stop remote control".to_string());
+    lines.push("  /remote-control <name>   - Start with custom bridge name".to_string());
     lines.push(String::new());
     lines.push("About Remote Control".to_string());
     lines.push("  Connects this terminal to claude.ai for remote session control.".to_string());
     lines.push("  Requires:".to_string());
-    lines.push("  - claude.ai account (OAuth)".to_string());
-    lines.push("  - ANTHROPIC_AUTH_TOKEN environment variable".to_string());
+    lines.push("  - claude.ai account".to_string());
+    lines.push("  - ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable".to_string());
     lines.push(String::new());
     lines.push("This feature is in active development.".to_string());
 
