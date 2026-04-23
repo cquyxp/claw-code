@@ -426,3 +426,116 @@ impl<'de> serde::Deserialize<'de> for PermissionRequest {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_user_input_simple() {
+        let text = r#"{"type":"user_input","data":"Hello, world!"}"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::UserInput(s) => assert_eq!(s, "Hello, world!"),
+            _ => panic!("Expected UserInput event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_user_input_with_text_field() {
+        let text = r#"{"type":"user_input","data":{"text":"Hello from nested!"}}"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::UserInput(s) => assert_eq!(s, "Hello from nested!"),
+            _ => panic!("Expected UserInput event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_control_command_stop() {
+        let text = r#"{"type":"control_command","data":{"command":"stop"}}"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::ControlCommand(ControlCommand::Stop) => {},
+            _ => panic!("Expected Stop control command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_control_command_pause() {
+        let text = r#"{"type":"control_command","data":{"command":"pause"}}"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::ControlCommand(ControlCommand::Pause) => {},
+            _ => panic!("Expected Pause control command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_control_command_resume() {
+        let text = r#"{"type":"control_command","data":{"command":"resume"}}"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::ControlCommand(ControlCommand::Resume) => {},
+            _ => panic!("Expected Resume control command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_permission_request() {
+        let text = r#"{
+            "type":"permission_request",
+            "data":{
+                "request_id":"req-123",
+                "tool_name":"read_file",
+                "tool_input":{"path":"/test/file.txt"},
+                "timeout_ms":30000
+            }
+        }"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::PermissionRequest(req) => {
+                assert_eq!(req.request_id, "req-123");
+                assert_eq!(req.tool_name, "read_file");
+            },
+            _ => panic!("Expected PermissionRequest event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_raw_message_fallback() {
+        let text = r#"{"type":"unknown_type","data":{"foo":"bar"}}"#;
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::Raw(_) => {},
+            _ => panic!("Expected Raw event for unknown type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plain_text_fallback() {
+        let text = "This is just plain text, not JSON";
+        let event = SessionIngress::parse_message(text);
+        match event {
+            IngressEvent::UserInput(s) => assert_eq!(s, "This is just plain text, not JSON"),
+            _ => panic!("Expected UserInput event for plain text"),
+        }
+    }
+
+    #[test]
+    fn test_ingress_config_default() {
+        let config = IngressConfig::default();
+        assert_eq!(config.ingress_url, "");
+        assert_eq!(config.session_token, "");
+        assert_eq!(config.reconnect_attempts, 5);
+        assert_eq!(config.reconnect_delay, Duration::from_secs(2));
+        assert_eq!(config.ping_interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_session_ingress_new() {
+        let config = IngressConfig::default();
+        let ingress = SessionIngress::new(config);
+        assert!(!ingress.is_connected());
+    }
+}
