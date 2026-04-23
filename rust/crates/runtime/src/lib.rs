@@ -62,6 +62,13 @@ pub use compact::{
 pub use bridge::{
     api::{BridgeApiClient, BridgeFatalError, BridgeHttpClient, validate_bridge_id},
     manager::BridgeManager,
+    ingress::{
+        IngressConfig, IngressError, IngressEvent, IngressSender,
+        SessionIngress, ControlCommand, PermissionRequest,
+    },
+    session::{
+        SessionSpawner, SpawnedSession, SessionCreateError,
+    },
     types::{
         AuthConfig, BridgeConfig, BridgeWorkerType,
         PermissionResponseEvent, SessionActivity, SessionActivityType, SessionDoneStatus,

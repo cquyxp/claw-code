@@ -173,3 +173,34 @@ pub struct PermissionResponseInner {
     pub request_id: String,
     pub response: serde_json::Value,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spawn_mode_default() {
+        let mode = SpawnMode::default();
+        assert_eq!(mode, SpawnMode::SameDir);
+    }
+
+    #[test]
+    fn test_work_data_type_serialization() {
+        let session_type = WorkDataType::Session;
+        let serialized = serde_json::to_string(&session_type).expect("Failed to serialize");
+        assert_eq!(serialized, "\"session\"");
+
+        let deserialized: WorkDataType = serde_json::from_str(&serialized).expect("Failed to deserialize");
+        assert_eq!(deserialized, WorkDataType::Session);
+
+        let healthcheck_type = WorkDataType::Healthcheck;
+        let serialized = serde_json::to_string(&healthcheck_type).expect("Failed to serialize");
+        assert_eq!(serialized, "\"healthcheck\"");
+    }
+
+    #[test]
+    fn test_bridge_worker_type_to_string() {
+        assert_eq!(BridgeWorkerType::ClaudeCode.to_string(), "claude_code");
+        assert_eq!(BridgeWorkerType::ClaudeCodeAssistant.to_string(), "claude_code_assistant");
+    }
+}

@@ -3,6 +3,8 @@
 pub mod types;
 pub mod api;
 pub mod manager;
+pub mod ingress;
+pub mod session;
 
 pub use api::{BridgeApiClient, BridgeFatalError, BridgeHttpClient, validate_bridge_id};
 pub use manager::BridgeManager;
