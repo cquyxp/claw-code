@@ -5,7 +5,8 @@ use serde_json::{Map, Value};
 use telemetry::SessionTracer;
 
 use crate::compact::{
-    compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
+    compact_session, compact_session_legacy, estimate_session_tokens, CompactionConfig,
+    CompactionMode, CompactionResult, LlmCompactionConfig,
 };
 use crate::config::RuntimeFeatureConfig;
 use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
@@ -49,9 +50,18 @@ pub struct PromptCacheEvent {
     pub token_drop: u32,
 }
 
+/// Non-streaming message response.
+#[derive(Debug, Clone)]
+pub struct MessageResponse {
+    pub content: String,
+    pub usage: TokenUsage,
+    pub model: String,
+}
+
 /// Minimal streaming API contract required by [`ConversationRuntime`].
 pub trait ApiClient {
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError>;
+    fn send_message(&mut self, request: ApiRequest) -> Result<MessageResponse, RuntimeError>;
 }
 
 /// Trait implemented by tool dispatchers that execute model-requested tools.
@@ -117,9 +127,11 @@ pub struct TurnSummary {
 }
 
 /// Details about automatic session compaction applied during a turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoCompactionEvent {
     pub removed_message_count: usize,
+    pub compaction_mode: CompactionMode,
+    pub llm_usage: Option<TokenUsage>,
 }
 
 /// Coordinates the model loop, tool execution, hooks, and session updates.
@@ -516,7 +528,45 @@ where
 
     #[must_use]
     pub fn compact(&self, config: CompactionConfig) -> CompactionResult {
-        compact_session(&self.session, config)
+        compact_session_legacy(&self.session, config)
+    }
+
+    /// Compact the session using LLM-driven compression (requires mutable access to API client).
+    pub fn compact_with_llm(
+        &mut self,
+        config: CompactionConfig,
+        mode: CompactionMode,
+        llm_config: LlmCompactionConfig,
+    ) -> CompactionResult {
+        compact_session(
+            &self.session,
+            config,
+            mode,
+            Some(llm_config),
+            Some(&mut self.api_client),
+        )
+    }
+
+    /// Compact the session with explicit mode and options.
+    pub fn compact_with_mode(
+        &mut self,
+        config: CompactionConfig,
+        mode: CompactionMode,
+        llm_config: Option<LlmCompactionConfig>,
+    ) -> CompactionResult {
+        if llm_config.is_some() && mode != CompactionMode::Heuristic {
+            compact_session(
+                &self.session,
+                config,
+                mode,
+                llm_config,
+                Some(&mut self.api_client),
+            )
+        } else {
+            let mut result = compact_session_legacy(&self.session, config);
+            result.compaction_mode = CompactionMode::Heuristic;
+            result
+        }
     }
 
     #[must_use]
@@ -559,7 +609,8 @@ where
             return None;
         }
 
-        let result = compact_session(
+        // Auto-compact always uses heuristic for speed and cost
+        let result = compact_session_legacy(
             &self.session,
             CompactionConfig {
                 max_estimated_tokens: 0,
@@ -574,6 +625,8 @@ where
         self.session = result.compacted_session;
         Some(AutoCompactionEvent {
             removed_message_count: result.removed_message_count,
+            compaction_mode: CompactionMode::Heuristic,
+            llm_usage: None,
         })
     }
 

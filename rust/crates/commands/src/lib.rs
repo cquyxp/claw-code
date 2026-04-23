@@ -86,6 +86,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "remote-control",
+        aliases: &["rc"],
+        summary: "Connect this terminal for remote-control sessions",
+        argument_hint: Some("[name]"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "model",
         aliases: &[],
         summary: "Show or switch the active model",
@@ -1103,6 +1110,10 @@ pub enum SlashCommand {
     Doctor,
     Login,
     Logout,
+    RemoteControl {
+        name: Option<String>,
+        session_id: Option<String>,
+    },
     Vim,
     Upgrade,
     Stats,
@@ -1241,6 +1252,7 @@ impl SlashCommand {
             Self::Plugins { .. } => "/plugins",
             Self::Login => "/login",
             Self::Logout => "/logout",
+            Self::RemoteControl { .. } => "/remote-control",
             Self::Vim => "/vim",
             Self::Upgrade => "/upgrade",
             Self::Share => "/share",
@@ -1386,6 +1398,25 @@ pub fn validate_slash_command_input(
         "doctor" | "providers" => {
             validate_no_args(command, &args)?;
             SlashCommand::Doctor
+        }
+        "remote-control" | "rc" => {
+            let mut name = None;
+            let mut session_id = None;
+
+            let mut i = 0;
+            while i < args.len() {
+                if args[i] == "--session-id" && i + 1 < args.len() {
+                    session_id = Some(args[i + 1].to_string());
+                    i += 2;
+                } else if name.is_none() {
+                    name = Some(args[i].to_string());
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
+
+            SlashCommand::RemoteControl { name, session_id }
         }
         "login" | "logout" => {
             return Err(command_error(
@@ -4072,6 +4103,7 @@ pub fn handle_slash_command(
         | SlashCommand::Doctor
         | SlashCommand::Login
         | SlashCommand::Logout
+        | SlashCommand::RemoteControl { .. }
         | SlashCommand::Vim
         | SlashCommand::Upgrade
         | SlashCommand::Stats

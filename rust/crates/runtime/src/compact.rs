@@ -1,4 +1,84 @@
+use crate::conversation::{ApiRequest, MessageResponse, RuntimeError};
 use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
+use crate::usage::TokenUsage;
+
+/// Compaction mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionMode {
+    Heuristic,
+    LlmDriven,
+    Hybrid,
+}
+
+/// LLM compaction config
+#[derive(Debug, Clone)]
+pub struct LlmCompactionConfig {
+    pub model: String,
+    pub max_output_tokens: u32,
+    pub temperature: Option<f64>,
+    pub use_prompt_cache: bool,
+    pub retry_on_failure: bool,
+    pub max_retries: u32,
+}
+
+impl Default for LlmCompactionConfig {
+    fn default() -> Self {
+        Self {
+            model: "claude-3-5-sonnet-20241022".into(),
+            max_output_tokens: 4096,
+            temperature: Some(0.3),
+            use_prompt_cache: true,
+            retry_on_failure: true,
+            max_retries: 2,
+        }
+    }
+}
+
+/// Enhanced compaction result with LLM details
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionResult {
+    pub summary: String,
+    pub formatted_summary: String,
+    pub compacted_session: Session,
+    pub removed_message_count: usize,
+    pub compaction_mode: CompactionMode,
+    pub llm_usage: Option<TokenUsage>,
+    pub llm_error: Option<String>,
+}
+
+const NO_TOOLS_PREAMBLE: &str =
+    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
+
+- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tools.
+- You already have all the context you need in the conversation above.
+- Your entire response must be plain text: an <analysis> block followed by a <summary> block.";
+
+const BASE_COMPACT_PROMPT: &str = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
+
+This summary should be thorough in capturing technical details, code patterns, and architectural decisions essential for continuing development work without losing context.
+
+Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts.
+
+Your summary should include these sections:
+1. Primary Request and Intent
+2. Key Technical Concepts
+3. Files and Code Sections
+4. Errors and Fixes
+5. Problem Solving
+6. All User Messages
+7. Pending Tasks
+8. Current Work
+9. Optional Next Step
+
+Structure your output:
+<analysis>
+... your analysis ...
+</analysis>
+
+<summary>
+1. Primary Request and Intent:
+...
+</summary>";
 
 const COMPACT_CONTINUATION_PREAMBLE: &str =
     "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n";
@@ -21,14 +101,6 @@ impl Default for CompactionConfig {
     }
 }
 
-/// Result of compacting a session into a summary plus preserved tail messages.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactionResult {
-    pub summary: String,
-    pub formatted_summary: String,
-    pub compacted_session: Session,
-    pub removed_message_count: usize,
-}
 
 /// Roughly estimates the token footprint of the current session transcript.
 #[must_use]
@@ -551,10 +623,264 @@ fn extract_summary_timeline(summary: &str) -> Vec<String> {
     lines
 }
 
+fn ensure_tool_result_pairing(
+    session: &Session,
+    raw_keep_from: usize,
+    compacted_prefix_len: usize,
+) -> usize {
+    let mut keep_from = raw_keep_from;
+    loop {
+        if keep_from == 0 || keep_from <= compacted_prefix_len {
+            break;
+        }
+        let first_preserved = &session.messages[keep_from];
+        let starts_with_tool_result = first_preserved
+            .blocks
+            .first()
+            .is_some_and(|b| matches!(b, ContentBlock::ToolResult { .. }));
+        if !starts_with_tool_result {
+            break;
+        }
+        let preceding = &session.messages[keep_from - 1];
+        let preceding_has_tool_use = preceding
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        if preceding_has_tool_use {
+            keep_from = keep_from.saturating_sub(1);
+            break;
+        }
+        keep_from = keep_from.saturating_sub(1);
+    }
+    keep_from
+}
+
+/// Trait for API client that can send non-streaming requests
+pub trait ApiClient {
+    fn send_message(&mut self, request: ApiRequest) -> Result<MessageResponse, RuntimeError>;
+}
+
+/// Multi-mode session compression entry point
+pub fn compact_session(
+    session: &Session,
+    config: CompactionConfig,
+    mode: CompactionMode,
+    llm_config: Option<LlmCompactionConfig>,
+    api_client: Option<&mut dyn ApiClient>,
+) -> CompactionResult {
+    match mode {
+        CompactionMode::Heuristic => compact_session_heuristic(session, config),
+        CompactionMode::LlmDriven => compact_session_llm_or_fallback(
+            session,
+            config,
+            llm_config,
+            api_client,
+            false,
+        ),
+        CompactionMode::Hybrid => compact_session_llm_or_fallback(
+            session,
+            config,
+            llm_config,
+            api_client,
+            true,
+        ),
+    }
+}
+
+/// Heuristic compaction (existing logic wrapper)
+fn compact_session_heuristic(session: &Session, config: CompactionConfig) -> CompactionResult {
+    if !should_compact(session, config) {
+        return CompactionResult {
+            summary: String::new(),
+            formatted_summary: String::new(),
+            compacted_session: session.clone(),
+            removed_message_count: 0,
+            compaction_mode: CompactionMode::Heuristic,
+            llm_usage: None,
+            llm_error: None,
+        };
+    }
+
+    let existing_summary = session
+        .messages
+        .first()
+        .and_then(extract_existing_compacted_summary);
+    let compacted_prefix_len = usize::from(existing_summary.is_some());
+    let raw_keep_from = session.messages.len().saturating_sub(config.preserve_recent_messages);
+    let keep_from = ensure_tool_result_pairing(session, raw_keep_from, compacted_prefix_len);
+    let removed = &session.messages[compacted_prefix_len..keep_from];
+    let preserved = session.messages[keep_from..].to_vec();
+    let summary =
+        merge_compact_summaries(existing_summary.as_deref(), &summarize_messages(removed));
+    let formatted_summary = format_compact_summary(&summary);
+    let continuation = get_compact_continuation_message(&summary, true, !preserved.is_empty());
+
+    let mut compacted_messages = vec![ConversationMessage {
+        role: MessageRole::System,
+        blocks: vec![ContentBlock::Text { text: continuation }],
+        usage: None,
+    }];
+    compacted_messages.extend(preserved);
+
+    let mut compacted_session = session.clone();
+    compacted_session.messages = compacted_messages;
+    compacted_session.record_compaction(summary.clone(), removed.len());
+
+    CompactionResult {
+        summary,
+        formatted_summary,
+        compacted_session,
+        removed_message_count: removed.len(),
+        compaction_mode: CompactionMode::Heuristic,
+        llm_usage: None,
+        llm_error: None,
+    }
+}
+
+/// LLM compression with optional fallback
+fn compact_session_llm_or_fallback(
+    session: &Session,
+    config: CompactionConfig,
+    llm_config: Option<LlmCompactionConfig>,
+    api_client: Option<&mut dyn ApiClient>,
+    use_fallback: bool,
+) -> CompactionResult {
+    let llm_config = match llm_config {
+        Some(cfg) => cfg,
+        None => {
+            let mut result = compact_session_heuristic(session, config);
+            result.compaction_mode = if use_fallback {
+                CompactionMode::Hybrid
+            } else {
+                CompactionMode::LlmDriven
+            };
+            result.llm_error = Some("LLM mode requires config".into());
+            return result;
+        }
+    };
+
+    let api_client = match api_client {
+        Some(client) => client,
+        None => {
+            let mut result = compact_session_heuristic(session, config);
+            result.compaction_mode = if use_fallback {
+                CompactionMode::Hybrid
+            } else {
+                CompactionMode::LlmDriven
+            };
+            result.llm_error = Some("LLM mode requires API client".into());
+            return result;
+        }
+    };
+
+    if !should_compact(session, config) {
+        return CompactionResult {
+            summary: String::new(),
+            formatted_summary: String::new(),
+            compacted_session: session.clone(),
+            removed_message_count: 0,
+            compaction_mode: CompactionMode::LlmDriven,
+            llm_usage: None,
+            llm_error: None,
+        };
+    }
+
+    let compacted_prefix_len = compacted_summary_prefix_len(session);
+    let raw_keep_from = session.messages.len().saturating_sub(config.preserve_recent_messages);
+    let keep_from = ensure_tool_result_pairing(session, raw_keep_from, compacted_prefix_len);
+    let messages_to_summarize = &session.messages[compacted_prefix_len..keep_from];
+
+    if messages_to_summarize.is_empty() {
+        return CompactionResult {
+            summary: String::new(),
+            formatted_summary: String::new(),
+            compacted_session: session.clone(),
+            removed_message_count: 0,
+            compaction_mode: CompactionMode::LlmDriven,
+            llm_usage: None,
+            llm_error: None,
+        };
+    }
+
+    let system_prompt = vec![NO_TOOLS_PREAMBLE.into()];
+    let mut messages = messages_to_summarize.to_vec();
+    messages.push(ConversationMessage::user_text(BASE_COMPACT_PROMPT));
+
+    let request = ApiRequest { system_prompt, messages };
+
+    let mut llm_usage = None;
+    let mut llm_error = None;
+    let mut summary = String::new();
+
+    for attempt in 0..llm_config.max_retries {
+        match api_client.send_message(request.clone()) {
+            Ok(response) => {
+                summary = response.content;
+                llm_usage = Some(response.usage);
+                break;
+            }
+            Err(e) => {
+                if attempt == llm_config.max_retries - 1 {
+                    llm_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    if let Some(err) = llm_error {
+        if use_fallback {
+            let mut result = compact_session_heuristic(session, config);
+            result.compaction_mode = CompactionMode::Hybrid;
+            result.llm_error = Some(err);
+            return result;
+        } else {
+            return CompactionResult {
+                summary: String::new(),
+                formatted_summary: String::new(),
+                compacted_session: session.clone(),
+                removed_message_count: 0,
+                compaction_mode: CompactionMode::LlmDriven,
+                llm_usage,
+                llm_error: Some(err),
+            };
+        }
+    }
+
+    let formatted_summary = format_compact_summary(&summary);
+    let continuation = get_compact_continuation_message(&summary, true, true);
+    let preserved_messages = session.messages[keep_from..].to_vec();
+
+    let mut compacted_messages = vec![ConversationMessage {
+        role: MessageRole::System,
+        blocks: vec![ContentBlock::Text { text: continuation }],
+        usage: None,
+    }];
+    compacted_messages.extend(preserved_messages);
+
+    let mut compacted_session = session.clone();
+    compacted_session.messages = compacted_messages;
+    compacted_session.record_compaction(summary.clone(), messages_to_summarize.len());
+
+    CompactionResult {
+        summary,
+        formatted_summary,
+        compacted_session,
+        removed_message_count: messages_to_summarize.len(),
+        compaction_mode: CompactionMode::LlmDriven,
+        llm_usage,
+        llm_error: None,
+    }
+}
+
+/// Backward-compatible session compression (heuristic mode)
+pub fn compact_session_legacy(session: &Session, config: CompactionConfig) -> CompactionResult {
+    compact_session_heuristic(session, config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_key_files, compact_session, format_compact_summary,
+        collect_key_files, compact_session_legacy as compact_session, format_compact_summary,
         get_compact_continuation_message, infer_pending_work, should_compact, CompactionConfig,
     };
     use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};

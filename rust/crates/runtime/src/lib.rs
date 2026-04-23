@@ -45,6 +45,7 @@ pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
 pub mod cron_scheduler;
+pub mod bridge;
 #[cfg(test)]
 mod trust_resolver;
 mod usage;
@@ -54,8 +55,20 @@ pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use compact::{
-    compact_session, estimate_session_tokens, format_compact_summary,
-    get_compact_continuation_message, should_compact, CompactionConfig, CompactionResult,
+    compact_session, compact_session_legacy, estimate_session_tokens, format_compact_summary,
+    get_compact_continuation_message, should_compact, CompactionConfig, CompactionMode,
+    CompactionResult, LlmCompactionConfig,
+};
+pub use bridge::{
+    api::{BridgeApiClient, BridgeFatalError, BridgeHttpClient, validate_bridge_id},
+    manager::BridgeManager,
+    types::{
+        AuthConfig, BridgeConfig, BridgeWorkerType,
+        PermissionResponseEvent, SessionActivity, SessionActivityType, SessionDoneStatus,
+        SpawnMode, SourceConfig, WorkData, WorkDataType, WorkResponse, WorkSecret, GitInfo,
+        BRIDGE_LOGIN_INSTRUCTION, DEFAULT_SESSION_TIMEOUT_MS, REMOTE_CONTROL_DISCONNECTED_MSG,
+    },
+    BridgeError, BridgeRuntime, BridgeLoopOptions, BridgeLoopEvent, run_bridge_loop,
 };
 pub use config::{
     ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,
@@ -71,8 +84,8 @@ pub use config_validate::{
 };
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
-    ToolExecutor, TurnSummary,
+    ConversationRuntime, MessageResponse, PromptCacheEvent, RuntimeError, StaticToolExecutor,
+    ToolError, ToolExecutor, TurnSummary,
 };
 pub use file_ops::{
     edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,

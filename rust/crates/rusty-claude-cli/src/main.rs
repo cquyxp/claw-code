@@ -3160,6 +3160,13 @@ struct LiveCli {
     runtime: BuiltRuntime,
     session: SessionHandle,
     prompt_history: Vec<PromptHistoryEntry>,
+    bridge_state: Option<BridgeState>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BridgeState {
+    is_running: bool,
+    environment_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3668,6 +3675,7 @@ impl LiveCli {
             runtime,
             session,
             prompt_history: Vec::new(),
+            bridge_state: None,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3992,6 +4000,10 @@ impl LiveCli {
                 println!("{}", format_cost_report(usage));
                 false
             }
+            SlashCommand::RemoteControl { name, session_id } => {
+                self.run_remote_control(name, session_id)?;
+                false
+            }
             SlashCommand::Login
             | SlashCommand::Logout
             | SlashCommand::Vim
@@ -4039,6 +4051,15 @@ impl LiveCli {
                 false
             }
         })
+    }
+
+    fn run_remote_control(
+        &mut self,
+        name: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        println!("{}", render_remote_control_status(&self.bridge_state, &name, &session_id));
+        Ok(())
     }
 
     fn persist_session(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -4868,6 +4889,46 @@ fn session_clear_backup_path(session_path: &Path) -> PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("session.jsonl");
     session_path.with_file_name(format!("{file_name}.before-clear-{timestamp}.bak"))
+}
+
+fn render_remote_control_status(
+    bridge_state: &Option<BridgeState>,
+    name: &Option<String>,
+    session_id: &Option<String>,
+) -> String {
+    let mut lines = vec!["Remote Control (claude.ai integration)".to_string()];
+
+    if let Some(state) = bridge_state {
+        if state.is_running {
+            lines.push("  Status: Running".to_string());
+            if let Some(env_id) = &state.environment_id {
+                lines.push(format!("  Environment ID: {}", env_id));
+            }
+        } else {
+            lines.push("  Status: Not running".to_string());
+        }
+    } else {
+        lines.push("  Status: Not running".to_string());
+    }
+
+    if let Some(n) = name {
+        lines.push(format!("  Bridge name: {}", n));
+    }
+
+    if let Some(sid) = session_id {
+        lines.push(format!("  Target session ID: {}", sid));
+    }
+
+    lines.push(String::new());
+    lines.push("About Remote Control".to_string());
+    lines.push("  Connects this terminal to claude.ai for remote session control.".to_string());
+    lines.push("  Requires:".to_string());
+    lines.push("  - claude.ai account (OAuth)".to_string());
+    lines.push("  - ANTHROPIC_AUTH_TOKEN environment variable".to_string());
+    lines.push(String::new());
+    lines.push("This feature is in active development.".to_string());
+
+    lines.join("\n")
 }
 
 fn render_repl_help() -> String {
@@ -6890,6 +6951,52 @@ impl ApiClient for AnthropicRuntimeClient {
             }
 
             Err(RuntimeError::new("post-tool continuation nudge exhausted"))
+        })
+    }
+
+    fn send_message(&mut self, request: ApiRequest) -> Result<runtime::MessageResponse, RuntimeError> {
+        if let Some(progress_reporter) = &self.progress_reporter {
+            progress_reporter.mark_model_phase();
+        }
+        let message_request = MessageRequest {
+            model: self.model.clone(),
+            max_tokens: max_tokens_for_model(&self.model),
+            messages: convert_messages(&request.messages),
+            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            tools: None, // No tools for compaction
+            tool_choice: None,
+            stream: false,
+            reasoning_effort: self.reasoning_effort.clone(),
+            ..Default::default()
+        };
+
+        let response = self.runtime.block_on(async {
+            self.client
+                .send_message(&message_request)
+                .await
+                .map_err(|error| {
+                    RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
+                })
+        })?;
+
+        // Convert response content to a plain string
+        let mut content = String::new();
+        for block in response.content {
+            if let api::OutputContentBlock::Text { text } = block {
+                content.push_str(&text);
+            }
+        }
+
+        // Convert API usage to runtime TokenUsage
+        let usage = runtime::TokenUsage {
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+        };
+
+        Ok(runtime::MessageResponse {
+            content,
+            usage,
+            model: response.model,
         })
     }
 }
