@@ -359,7 +359,61 @@ mod tests {
     #[test]
     fn test_session_spawner_new() {
         let temp_dir = std::env::temp_dir();
-        let spawner = SessionSpawner::new(temp_dir, SpawnMode::SameDir);
+        let spawner = SessionSpawner::new(temp_dir.clone(), SpawnMode::SameDir);
         assert_eq!(spawner.spawn_mode, SpawnMode::SameDir);
+
+        let spawner = SessionSpawner::new(temp_dir, SpawnMode::Worktree);
+        assert_eq!(spawner.spawn_mode, SpawnMode::Worktree);
+    }
+
+    #[test]
+    fn test_work_secret_default() {
+        let secret = WorkSecret::default();
+        assert_eq!(secret.version, 0);
+        assert_eq!(secret.session_ingress_token, "");
+        assert_eq!(secret.api_base_url, "");
+        assert!(secret.sources.is_empty());
+        assert!(secret.auth.is_empty());
+        assert!(secret.claude_code_args.is_none());
+        assert!(secret.mcp_config.is_none());
+        assert!(secret.environment_variables.is_none());
+        assert!(secret.use_code_sessions.is_none());
+    }
+
+    #[test]
+    fn test_source_config_default() {
+        let config = SourceConfig::default();
+        assert_eq!(config.r#type, "");
+        assert!(config.git_info.is_none());
+    }
+
+    #[test]
+    fn test_git_info_default() {
+        let info = GitInfo::default();
+        assert_eq!(info.r#type, "");
+        assert_eq!(info.repo, "");
+        assert!(info.r#ref.is_none());
+        assert!(info.token.is_none());
+    }
+
+    #[test]
+    fn test_auth_config_default() {
+        let config = AuthConfig::default();
+        assert_eq!(config.r#type, "");
+        assert_eq!(config.token, "");
+    }
+
+    #[test]
+    fn test_spawn_mode_default() {
+        let mode = SpawnMode::default();
+        assert_eq!(mode, SpawnMode::SameDir);
+    }
+
+    #[test]
+    fn test_spawn_mode_variants() {
+        // Just ensure we can create all variants
+        let _ = SpawnMode::SingleSession;
+        let _ = SpawnMode::Worktree;
+        let _ = SpawnMode::SameDir;
     }
 }
