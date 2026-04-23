@@ -158,7 +158,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## 许可证
 
-详见项目根目录的许可证文件。
+本项目采用 **MIT License** 许可证。详见 [LICENSE](LICENSE) 文件。
 
 ---
 
