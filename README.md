@@ -1,9 +1,6 @@
 # Claw Code
 
 <div align="center">
-  <img src="assets/claw-hero.jpeg" alt="Claw Code" width="300" />
-  <p></p>
-  
   <p>
     <strong>高性能Rust实现的AI Agent命令行工具</strong>
   </p>
