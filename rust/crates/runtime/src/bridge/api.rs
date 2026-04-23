@@ -190,16 +190,9 @@ impl BridgeHttpClient {
             reqwest::header::CONTENT_TYPE,
             reqwest::header::HeaderValue::from_static("application/json"),
         );
+        // Generic bridge headers - can be customized or extended by implementors
         headers.insert(
-            "anthropic-version",
-            reqwest::header::HeaderValue::from_static("2023-06-01"),
-        );
-        headers.insert(
-            "anthropic-beta",
-            reqwest::header::HeaderValue::from_static("environments-2025-11-01"),
-        );
-        headers.insert(
-            "x-environment-runner-version",
+            "x-bridge-version",
             reqwest::header::HeaderValue::from_str(&self.runner_version)
                 .expect("valid header value"),
         );
@@ -207,7 +200,7 @@ impl BridgeHttpClient {
         if let Some(get_token) = &self.get_trusted_device_token {
             if let Some(token) = get_token() {
                 headers.insert(
-                    "x-trusted-device-token",
+                    "x-bridge-device-token",
                     reqwest::header::HeaderValue::from_str(&token)
                         .expect("valid header value"),
                 );

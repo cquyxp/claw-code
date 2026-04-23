@@ -8,9 +8,15 @@ use serde::{Deserialize, Serialize};
 /// Default per-session timeout (24 hours)
 pub const DEFAULT_SESSION_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// Default control server URL (local test server)
+pub const DEFAULT_CONTROL_SERVER_URL: &str = "http://localhost:8765";
+
+/// Default session ingress URL (local test server)
+pub const DEFAULT_INGRESS_SERVER_URL: &str = "ws://localhost:8765";
+
 /// Reusable login guidance appended to bridge auth errors
 pub const BRIDGE_LOGIN_INSTRUCTION: &str =
-    "Remote Control is only available with claude.ai subscriptions. Please use `/login` to sign in with your claude.ai account.";
+    "Remote Control requires valid authentication. Please configure your access token or credentials.";
 
 /// Shown when the user disconnects Remote Control
 pub const REMOTE_CONTROL_DISCONNECTED_MSG: &str = "Remote Control disconnected.";

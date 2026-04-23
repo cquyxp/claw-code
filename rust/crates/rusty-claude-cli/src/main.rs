@@ -4113,11 +4113,15 @@ impl LiveCli {
         // Build bridge config
         let bridge_config = self.build_bridge_config(name.clone(), session_id.clone())?;
 
-        // Create HTTP client
+        // Create HTTP client with generic token support
         let api_client = Arc::new(BridgeHttpClient::new(
             bridge_config.api_base_url.clone(),
             env!("CARGO_PKG_VERSION").to_string(),
-            || std::env::var("ANTHROPIC_API_KEY").ok(),
+            || {
+                std::env::var("CLAW_API_KEY")
+                    .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+                    .ok()
+            },
         )?);
 
         // Create bridge runtime
@@ -4188,11 +4192,13 @@ impl LiveCli {
         let bridge_id = self.generate_simple_id();
         let environment_id = self.generate_simple_id();
 
-        let api_base_url = std::env::var("ANTHROPIC_BASE_URL")
-            .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+        let api_base_url = std::env::var("CLAW_CONTROL_URL")
+            .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
+            .unwrap_or_else(|_| runtime::bridge::DEFAULT_CONTROL_SERVER_URL.to_string());
 
-        let session_ingress_url = std::env::var("ANTHROPIC_INGRESS_URL")
-            .unwrap_or_else(|_| "wss://api.anthropic.com".to_string());
+        let session_ingress_url = std::env::var("CLAW_INGRESS_URL")
+            .or_else(|_| std::env::var("ANTHROPIC_INGRESS_URL"))
+            .unwrap_or_else(|_| runtime::bridge::DEFAULT_INGRESS_SERVER_URL.to_string());
 
         Ok(BridgeConfig {
             dir: cwd_str,
@@ -5091,7 +5097,7 @@ fn render_remote_control_status(
     name: &Option<String>,
     session_id: &Option<String>,
 ) -> String {
-    let mut lines = vec!["Remote Control (claude.ai integration)".to_string()];
+    let mut lines = vec!["Remote Control (claw bridge)".to_string()];
     lines.push(String::new());
 
     if let Some(state) = bridge_state {
@@ -5120,11 +5126,14 @@ fn render_remote_control_status(
     lines.push("  /remote-control stop     - Stop remote control".to_string());
     lines.push("  /remote-control <name>   - Start with custom bridge name".to_string());
     lines.push(String::new());
+    lines.push("Configuration:".to_string());
+    lines.push("  CLAW_CONTROL_URL       - Control server API endpoint".to_string());
+    lines.push("  CLAW_INGRESS_URL       - Session ingress WebSocket endpoint".to_string());
+    lines.push("  CLAW_API_KEY           - Authentication token for bridge".to_string());
+    lines.push(String::new());
     lines.push("About Remote Control".to_string());
-    lines.push("  Connects this terminal to claude.ai for remote session control.".to_string());
-    lines.push("  Requires:".to_string());
-    lines.push("  - claude.ai account".to_string());
-    lines.push("  - ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable".to_string());
+    lines.push("  Connects this terminal to a remote control server.".to_string());
+    lines.push("  Allows remote execution and monitoring of claw sessions.".to_string());
     lines.push(String::new());
     lines.push("This feature is in active development.".to_string());
 

@@ -74,6 +74,7 @@ pub use bridge::{
         PermissionResponseEvent, SessionActivity, SessionActivityType, SessionDoneStatus,
         SpawnMode, SourceConfig, WorkData, WorkDataType, WorkResponse, WorkSecret, GitInfo,
         BRIDGE_LOGIN_INSTRUCTION, DEFAULT_SESSION_TIMEOUT_MS, REMOTE_CONTROL_DISCONNECTED_MSG,
+        DEFAULT_CONTROL_SERVER_URL, DEFAULT_INGRESS_SERVER_URL,
     },
     BridgeError, BridgeRuntime, BridgeLoopOptions, BridgeLoopEvent, run_bridge_loop,
 };
