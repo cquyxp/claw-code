@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Claw Code is a public Rust implementation of the `claw` CLI agent harness. It's a high-performance, native rewrite of the Claude Code agent system.
 
-- **Repository:** ultraworkers/claw-code
+- **Repository:** cquyxp/claw-code
 - **Primary implementation:** `rust/` directory (Rust workspace)
 - **Canonical binary:** `claw` (built from `rust/crates/rusty-claude-cli`)
 

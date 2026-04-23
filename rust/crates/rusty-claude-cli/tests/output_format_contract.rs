@@ -255,7 +255,7 @@ fn doctor_and_resume_status_emit_json_when_requested() {
         .expect("install source check");
     assert_eq!(
         install_source["official_repo"],
-        "https://github.com/ultraworkers/claw-code"
+        "https://github.com/cquyxp/claw-code"
     );
     assert_eq!(
         install_source["deprecated_install"],
